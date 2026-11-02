@@ -230,18 +230,50 @@ Result/PheNorm_Analysis_result_YYYYMMDD_HHMMSS/Analysis.html
 
 Keep RGui open until rendering and all four pipeline stages finish.
 
-## Running without RStudio
-
+## Running with terminal
 Install R and Pandoc, and make both `Rscript` and `pandoc` available on the system `PATH`. Then open a terminal and change to the project root.
 
-macOS/Linux/Windows (terminal accessed through VS Code) example:
+macOS/Linux example:
 
 ```bash
 cd "/path/to/PheNorm_renv"
 Rscript -e 'renv::restore()'
 Rscript -e 'stopifnot(rmarkdown::pandoc_available())'
-Rscript -e 'input <- "PheNorm_Analysis.Rmd"; out <- file.path("Result", paste0(tools::file_path_sans_ext(basename(input)), "_result_", format(Sys.time(), "%Y%m%d_%H%M%S"))); dir.create(out, recursive = TRUE, showWarnings = FALSE); Sys.setenv(RUN_DIR = out); rmarkdown::render(input, output_file = "Analysis.html", output_dir = out)'
+Rscript -e '
+input <- "PheNorm_Analysis.Rmd"
+run_name <- paste0(
+  tools::file_path_sans_ext(basename(input)),
+  "_result_",
+  format(Sys.time(), "%Y%m%d_%H%M%S")
+)
+output_dir <- file.path("Result", run_name)
+
+dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
+Sys.setenv(RUN_DIR = output_dir)
+rmarkdown::render(
+  input,
+  output_file = "Analysis.html",
+  output_dir = output_dir
+)
+'
 ```
+
+Windows example:
+
+First, run the following commands per PowerShell window. Adjust the path as needed.
+
+```powershell
+$env:Path += ";C:\Program Files\R\R-4.6.1\bin"
+$env:RSTUDIO_PANDOC = 'C:\Program Files\RStudio\resources\app\bin\quarto\bin\tools'
+```
+
+```powershell
+Set-Location "C:\path\to\PheNorm_renv"
+Rscript -e 'renv::restore()'
+Rscript -e 'stopifnot(rmarkdown::pandoc_available())'
+Rscript -e 'input <- \"PheNorm_Analysis.Rmd\"; out <- file.path(\"Result\", paste0(tools::file_path_sans_ext(basename(input)), \"_result_\", format(Sys.time(), \"%Y%m%d_%H%M%S\"))); dir.create(out, recursive = TRUE, showWarnings = FALSE); Sys.setenv(RUN_DIR = out); rmarkdown::render(input, output_file = \"Analysis.html\", output_dir = out)'
+```
+
 
 The package restore only needs to be repeated when the environment is missing or the lockfile changes.
 

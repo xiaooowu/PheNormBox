@@ -1,0 +1,23 @@
+# R / RStudio state
+.Rproj.user/
+.Rhistory
+.RData
+.Ruserdata
+
+# macOS metadata
+.DS_Store
+
+# renv local libraries; keep renv.lock and bootstrap files
+renv/library/
+renv/staging/
+renv/local/
+
+# Prevent future processed data from being committed
+!Result/Processed_data/
+Result/Processed_data/*
+!Result/Processed_data/.gitkeep
+
+# Prevent future private datasets from being committed
+Data/*
+!Data/Smoke_test/
+!Data/Smoke_test/**

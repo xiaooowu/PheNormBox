@@ -1,0 +1,1105 @@
+---
+title: "Generalizable PheNorm Analysis"
+author: "PheNormBox user"
+date: "`r format(Sys.Date(), '%Y-%m-%d')`"
+knit: (function(inputFile, encoding) {
+  name <- tools::file_path_sans_ext(basename(inputFile));
+  project <- dirname(normalizePath(inputFile));
+  out <- file.path(project, "Result", paste0(
+    name, "_result_", format(Sys.time(), "%Y%m%d_%H%M%S")
+  ));
+  dir.create(out, recursive = TRUE, showWarnings = FALSE);
+  Sys.setenv(RUN_DIR = out);
+  on.exit(Sys.unsetenv("RUN_DIR"));
+  rmarkdown::render(inputFile, encoding = encoding,
+                    output_file = "Analysis.html",
+                    output_dir = out);
+  })
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    toc_float:
+      collapsed: true
+      smooth_scroll: true
+    code_folding: hide
+---
+
+## Before you run this file
+
+**USER ACTION REQUIRED:** Edit the values in the first code chunk below. All dataset-specific settings are grouped there and marked with `USER MUST SPECIFY`. The example values come from the KPWA anaphylaxis analysis and can be replaced with values for another cohort.
+
+The input must have one row per patient and numeric, nonnegative model
+variables. Count variables should remain untransformed because stage 1 applies
+`log(x + 1)`. The chart-reviewed rows must contain both 0 and 1 outcomes.
+Unreviewed rows are used to train PheNorm; reviewed rows are used for internal
+evaluation.
+
+The input is read from a `.csv` file.
+
+```{r user-configuration}
+# ============================================================================
+# EDIT THIS SECTION BEFORE RUNNING A NEW ANALYSIS
+# ============================================================================
+
+# Data path ---------------------------------------------------------------
+# USER MUST SPECIFY: either an absolute path or a path built with here::here().
+data_file <- here::here("Data", "Smoke_test", "phenorm_smoke_test_nonrare_info.csv")
+
+# Dataset columns ---------------------------------------------------------
+# USER MUST SPECIFY: a unique patient/row identifier column.
+study_id_col <- "study_id"
+
+# USER MUST SPECIFY: column identifying chart-reviewed/evaluation rows, and the value in that column that means "reviewed". All other nonmissing values are treated as unreviewed/training rows.
+reviewed_col <- "reviewed_col"
+reviewed_value <- 1
+
+# USER MUST SPECIFY: binary gold-standard outcome column (0 = negative, 1 = positive). It may be missing for unreviewed rows, but not reviewed rows.
+gold_outcome_col <- "gold_outcome"
+
+# USER MUST SPECIFY: nonnegative utilization variable (for example, number of notes or encounters). PheNorm uses it for normalization.
+utilization_col <- "utilization"
+
+# USER MUST SPECIFY, or use NULL: inverse-probability/sample-weight column.
+# When NULL, every row receives weight 1.
+sampling_weight_col <- "sampling_weight"
+
+# Model variables ---------------------------------------------------------
+# USER MUST SPECIFY: the exact silver-label column names. At least one is
+# required, and every name must begin with the lowercase prefix "silver_".
+silver_label_cols <- c(
+  "silver_total_icd_nlp",
+  "silver_total_icd_mention",
+  "silver_total_nlp"
+)
+
+# USER MUST SPECIFY: every other predictor column, exactly by name. List Race
+# and CUI columns individually here; regular-expression extraction is not used.
+# Do not repeat the ID, review indicator, outcome, utilization, weight, or
+# silver-label columns here.
+predictor_cols <- c(
+  "age", "sex_female",
+  "race_asian", "race_black", "race_white",
+  "C0000001", "C0000002"
+)
+
+# Analysis settings -------------------------------------------------------
+# USER MUST SPECIFY: a short site/cohort name used in output filenames.
+# Use only letters, numbers, underscores, or hyphens.
+site <- "smoke_test"
+
+# OPTIONAL: stage-4 prediction sites. Keep both equal to `site` to use the
+# analysis data and fitted model created in this run. For cross-site prediction,
+# set the data/model sites separately and provide the corresponding directories.
+stage4_data_site <- site
+stage4_model_site <- site
+
+# OPTIONAL: directories used only by stage 4.
+# `stage4_data_dir` must contain:
+#   <analysis_name>_<stage4_data_site>_analysis_data.rds
+# `stage4_output_dir` must contain:
+#   fits/<analysis_name>_<stage4_model_site>_phenorm_output.rds
+# NULL uses this run's analysis-data and results directories, respectively.
+stage4_data_dir <- NULL
+stage4_output_dir <- NULL
+
+# OPTIONAL: output name stem. NULL uses this Rmd file's name.
+analysis_id <- NULL
+
+```
+
+## Setup
+
+Reports, results, and logs are saved in a timestamped folder in the project's
+`Result` directory. Prepared and analysis-ready data use a matching folder
+under `Result/Processed_data`.
+
+```{r setup}
+knitr::opts_chunk$set(echo = TRUE, message = TRUE, warning = TRUE)
+
+project_dir <- here::here()
+analysis_dir <- file.path(project_dir, "Result")
+
+current_input <- knitr::current_input()
+analysis_name <- if (!is.null(analysis_id)) {
+  analysis_id
+} else if (length(current_input) == 1L && nzchar(current_input)) {
+  tools::file_path_sans_ext(basename(current_input))
+} else {
+  # Fallback for running individual chunks outside a Knit/render operation.
+  "Generalizable_PheNorm_Analysis"
+}
+
+if (!is.character(analysis_name) || length(analysis_name) != 1L ||
+    !nzchar(analysis_name) || !grepl("^[A-Za-z0-9_-]+$", analysis_name)) {
+  stop("analysis_id must contain only letters, numbers, underscores, or hyphens.")
+}
+site_settings <- list(
+  site = site,
+  stage4_data_site = stage4_data_site,
+  stage4_model_site = stage4_model_site
+)
+valid_site <- function(x) {
+  is.character(x) && length(x) == 1L && nzchar(x) &&
+    grepl("^[A-Za-z0-9_-]+$", x)
+}
+invalid_sites <- names(site_settings)[
+  !vapply(site_settings, valid_site, logical(1))
+]
+if (length(invalid_sites)) {
+  stop(
+    paste(invalid_sites, collapse = ", "),
+    " must contain only letters, numbers, underscores, or hyphens."
+  )
+}
+
+# Use the directory created by the custom Knit function. When chunks are run
+# interactively or rmarkdown::render() is called directly, create a new one.
+run_dir <- Sys.getenv("RUN_DIR")
+if (!nzchar(run_dir)) {
+  run_dir <- file.path(
+    analysis_dir,
+    paste0(analysis_name, "_result_", format(Sys.time(), "%Y%m%d_%H%M%S"))
+  )
+}
+
+processed_data_run_dir <- file.path(
+  analysis_dir, "Processed_data", basename(run_dir)
+)
+
+dirs <- c(
+  file.path(processed_data_run_dir, c("prepared_input", "analysis_data")),
+  file.path(run_dir, c("results", "logs"))
+)
+names(dirs) <- c("input", "analysis", "results", "logs")
+invisible(lapply(dirs, dir.create, recursive = TRUE, showWarnings = FALSE))
+slash <- function(x) paste0(normalizePath(x), "/")
+
+stage4_data_dir_resolved <- if (is.null(stage4_data_dir)) {
+  dirs[["analysis"]]
+} else {
+  stage4_data_dir
+}
+stage4_output_dir_resolved <- if (is.null(stage4_output_dir)) {
+  dirs[["results"]]
+} else {
+  stage4_output_dir
+}
+if (!dir.exists(stage4_data_dir_resolved)) {
+  stop("stage4_data_dir does not exist: ", stage4_data_dir_resolved)
+}
+if (!dir.exists(stage4_output_dir_resolved)) {
+  stop("stage4_output_dir does not exist: ", stage4_output_dir_resolved)
+}
+```
+
+## Phenorm analysis
+
+### Prepare the cohort
+
+The following code maps the user-selected source columns to the standardized
+special-purpose names expected by the unchanged PheNorm scripts. Predictor
+names are retained. Silver-label source columns are selected only from the
+explicit list above; when necessary, their names are prefixed internally with
+`SILVER_` because stage 1 identifies silver labels by that word.
+
+```{r prepare-cohort}
+# Read the data.
+if (!file.exists(data_file)) stop("Data file does not exist: ", data_file)
+raw <- read.csv(
+  data_file,
+  check.names = FALSE,
+  na.strings = c("NA", ".", "")
+)
+
+if (!is.data.frame(raw)) stop("The input must be a data frame.")
+if (nrow(raw) == 0L) stop("The input data has no rows.")
+if (anyDuplicated(names(raw))) stop("The input has duplicated column names.")
+
+# Validate the explicitly supplied model columns.
+if (!is.character(predictor_cols) || !is.character(silver_label_cols) ||
+    length(silver_label_cols) == 0L) {
+  stop("predictor_cols and silver_label_cols must be character vectors; at least one silver label is required.")
+}
+if (anyDuplicated(silver_label_cols) || any(!nzchar(silver_label_cols))) {
+  stop("silver_label_cols must contain unique, nonempty column names.")
+}
+if (anyDuplicated(predictor_cols) || any(!nzchar(predictor_cols))) {
+  stop("predictor_cols must contain unique, nonempty column names.")
+}
+
+# Validate configured source columns before subsetting.
+required_cols <- c(
+  reviewed_col, gold_outcome_col, utilization_col, silver_label_cols,
+  predictor_cols
+)
+if (!is.null(study_id_col)) required_cols <- c(required_cols, study_id_col)
+if (!is.null(sampling_weight_col)) {
+  required_cols <- c(required_cols, sampling_weight_col)
+}
+missing_cols <- setdiff(unique(required_cols), names(raw))
+if (length(missing_cols)) {
+  stop("Configured columns not found in the data: ",
+       paste(missing_cols, collapse = ", "))
+}
+
+special_cols <- unique(c(
+  study_id_col, reviewed_col, gold_outcome_col, utilization_col,
+  sampling_weight_col, silver_label_cols
+))
+overlap <- intersect(predictor_cols, special_cols)
+if (length(overlap)) {
+  stop("Remove these special-purpose columns from predictor_cols: ",
+       paste(overlap, collapse = ", "))
+}
+
+# Cohort setup: unreviewed rows train the model; reviewed rows evaluate it.
+reviewed_raw <- raw[[reviewed_col]]
+if (anyNA(reviewed_raw)) stop("The review indicator contains missing values.")
+reviewed <- reviewed_raw == reviewed_value
+if (!any(reviewed) || !any(!reviewed)) {
+  stop("The data must contain both reviewed/evaluation and unreviewed/training rows.")
+}
+
+outcome <- raw[[gold_outcome_col]]
+if (!is.numeric(outcome) && !is.integer(outcome) && !is.logical(outcome)) {
+  stop("The gold-standard outcome must be numeric/logical and coded 0/1.")
+}
+reviewed_outcomes <- as.numeric(outcome[reviewed])
+if (anyNA(reviewed_outcomes) || any(!reviewed_outcomes %in% 0:1) ||
+    !identical(sort(unique(reviewed_outcomes)), c(0, 1))) {
+  stop("Reviewed outcomes must be nonmissing and include both 0 and 1.")
+}
+
+study_id <- if (is.null(study_id_col)) seq_len(nrow(raw)) else raw[[study_id_col]]
+sampling_weight <- if (is.null(sampling_weight_col)) {
+  rep(1, nrow(raw))
+} else {
+  raw[[sampling_weight_col]]
+}
+
+# Map source silver labels to the uppercase internal names expected downstream.
+silver_model_names <- toupper(ifelse(
+  grepl("silver", silver_label_cols, ignore.case = TRUE),
+  silver_label_cols,
+  paste0("SILVER_", make.names(silver_label_cols))
+))
+silver_model_names <- make.unique(silver_model_names)
+
+feature_cols <- c(predictor_cols, silver_label_cols)
+feature_data <- raw[feature_cols]
+names(feature_data)[match(silver_label_cols, names(feature_data))] <-
+  silver_model_names
+reserved_model_names <- c(
+  "Studyid", "Train_Eval_Set", "PTYPE_POSITIVE", "Sampling_Weight", "Utiliz"
+)
+name_collisions <- intersect(names(feature_data), reserved_model_names)
+if (length(name_collisions) || anyDuplicated(names(feature_data))) {
+  stop(
+    "Selected predictors produce duplicated/reserved prepared-data names: ",
+    paste(unique(c(name_collisions,
+                   names(feature_data)[duplicated(names(feature_data))])),
+          collapse = ", ")
+  )
+}
+
+cohort <- data.frame(
+  Studyid = study_id,
+  Train_Eval_Set = as.integer(reviewed),
+  PTYPE_POSITIVE = ifelse(reviewed, as.integer(outcome), NA_integer_),
+  Sampling_Weight = sampling_weight,
+  Utiliz = if (is.null(utilization_col)) 1 else raw[[utilization_col]],
+  feature_data,
+  check.names = FALSE
+)
+
+model_data <- cohort[setdiff(names(cohort), c("Studyid", "PTYPE_POSITIVE"))]
+if (anyDuplicated(cohort$Studyid) || anyNA(cohort$Studyid)) {
+  stop("Study IDs must be unique and nonmissing.")
+}
+if (!all(vapply(model_data, is.numeric, logical(1)))) {
+  bad <- names(model_data)[!vapply(model_data, is.numeric, logical(1))]
+  stop("All model variables must be numeric. Recode: ",
+       paste(bad, collapse = ", "))
+}
+if (anyNA(model_data) || !all(is.finite(as.matrix(model_data)))) {
+  stop("Model variables must be complete and finite (no NA, NaN, or Inf).")
+}
+if (any(as.matrix(model_data) < 0)) {
+  stop("Model variables must be nonnegative.")
+}
+if (any(cohort$Sampling_Weight <= 0)) {
+  stop("Sampling weights must be greater than zero.")
+}
+
+input_file <- file.path(
+  dirs[["input"]],
+  paste0(analysis_name, "_prepared.rds")
+)
+saveRDS(cohort, input_file)
+```
+
+### Run the PheNorm pipeline
+
+Each stage runs in a separate R process. Output is shown here and saved in the
+run's `logs` folder; a failed stage stops the notebook.
+
+```{r run-pipeline}
+run_stage <- function(name, script, args) {
+  old_wd <- setwd(project_dir)
+  on.exit(setwd(old_wd))
+  output <- system2(
+    file.path(R.home("bin"), "Rscript"),
+    c(shQuote(file.path(project_dir, "PheNorm", script)),
+      vapply(args, shQuote, character(1))),
+    stdout = TRUE, stderr = TRUE
+  )
+  status <- attr(output, "status")
+  if (is.null(status)) status <- 0L
+  log_file <- file.path(dirs["logs"], paste0(name, ".log"))
+  writeLines(output, log_file)
+  if (status != 0L) stop(name, " failed; see ", log_file, "\n",
+                         paste(output, collapse = "\n"))
+  data.frame(Stage = name, Exit_status = status, Log = log_file)
+}
+```
+
+### Stage 1: process the input data
+
+The following settings control Stage 1 preprocessing and feature selection.
+
+```{r stage-1-tuning-parameters}
+# Define and display the Stage 1 tuning parameters passed to preprocessing.
+stage1_afep_cui <- "C5203670"
+stage1_use_afep <- FALSE
+stage1_use_nonnegative_mentions <- FALSE
+stage1_nonnegative_label <- "_nonneg"
+stage1_use_nonnormalized_features <- TRUE
+stage1_use_normalized_features <- FALSE
+stage1_train_on_gold <- FALSE
+stage1_chart_reviewed <- TRUE
+
+knitr::kable(data.frame(
+  Tuning_parameter = c(
+    "stage1_afep_cui",
+    "stage1_use_afep",
+    "stage1_use_nonnegative_mentions",
+    "stage1_nonnegative_label",
+    "stage1_use_nonnormalized_features",
+    "stage1_use_normalized_features",
+    "stage1_train_on_gold",
+    "stage1_chart_reviewed"
+  ),
+  Value = c(
+    stage1_afep_cui,
+    stage1_use_afep,
+    stage1_use_nonnegative_mentions,
+    stage1_nonnegative_label,
+    stage1_use_nonnormalized_features,
+    stage1_use_normalized_features,
+    stage1_train_on_gold,
+    stage1_chart_reviewed
+  ),
+  Meaning = c(
+    "Outcome-specific CUI used if AFEP screening is enabled",
+    "Apply AFEP screening to NLP variables",
+    "Use non-negated mentions instead of all mentions",
+    "Suffix identifying non-negated CUI variables",
+    "Include non-normalized NLP features",
+    "Include normalized NLP features",
+    "Include chart-reviewed observations in model training",
+    "Indicate that gold-standard chart reviews are available"
+  ),
+  check.names = FALSE
+))
+
+stage1_afep_flag <- if (stage1_use_afep) "--use-afep" else "--no-afep"
+stage1_nonnegative_flag <- if (stage1_use_nonnegative_mentions) {
+  "--use-nonneg"
+} else {
+  "--no-nonneg"
+}
+stage1_nonnormalized_flag <- if (stage1_use_nonnormalized_features) {
+  "--use-nonnormalized"
+} else {
+  "--no-nonnormalized"
+}
+stage1_normalized_flag <- if (stage1_use_normalized_features) {
+  "--use-normalized"
+} else {
+  "--no-normalized"
+}
+stage1_train_on_gold_flag <- if (stage1_train_on_gold) {
+  "--train-on-gold"
+} else {
+  character(0)
+}
+```
+
+```{r process-data}
+stage_1 <- run_stage(
+  "01_process_data",
+  "01_process_data.R",
+  c(
+    "--data-dir", slash(dirs["input"]),
+    "--analysis-data-dir", slash(dirs["analysis"]),
+    "--data-name", basename(input_file),
+    "--analysis", analysis_name,
+    "--train-value", "Training",
+    "--gold-label", "PTYPE_POSITIVE",
+    "--valid-label", "Train_Eval_Set",
+    "--study-id", "Studyid",
+    "--utilization", "Utiliz",
+    "--weight", "Sampling_Weight",
+    "--site", site,
+    "--cui", stage1_afep_cui,
+    "--nonneg-label", stage1_nonnegative_label,
+    "--chart-reviewed", as.character(stage1_chart_reviewed),
+    stage1_nonnegative_flag,
+    stage1_afep_flag,
+    stage1_nonnormalized_flag,
+    stage1_normalized_flag,
+    stage1_train_on_gold_flag
+  )
+)
+knitr::kable(stage_1)
+```
+
+### Stage 2: fit PheNorm
+
+The following settings control PheNorm fitting and its random resampling.
+
+```{r stage-2-tuning-parameters}
+# Define and display the Stage 2 tuning parameters passed to model fitting.
+stage2_seed <- 12345L
+stage2_corrupt_rate <- 0.3
+stage2_train_size_multiplier <- 13L
+
+knitr::kable(data.frame(
+  Tuning_parameter = c(
+    "stage2_seed",
+    "stage2_corrupt_rate",
+    "stage2_train_size_multiplier"
+  ),
+  Value = c(
+    stage2_seed,
+    stage2_corrupt_rate,
+    stage2_train_size_multiplier
+  ),
+  Meaning = c(
+    "Random-number seed used for reproducible fitting",
+    "Probability used for random corruption during denoising",
+    "Multiplier used to determine the resampled training size"
+  ),
+  check.names = FALSE
+))
+```
+
+```{r fit-phenorm}
+stage_2 <- run_stage(
+  "02_run_phenorm",
+  "02_run_phenorm.R",
+  c(
+    "--data-dir", slash(dirs["analysis"]),
+    "--output-dir", slash(dirs["results"]),
+    "--analysis", analysis_name,
+    "--seed", stage2_seed,
+    "--utilization", "Utiliz",
+    "--weight", "Sampling_Weight",
+    "--corrupt-rate", stage2_corrupt_rate,
+    "--train-size-multiplier", stage2_train_size_multiplier,
+    "--site", site
+  )
+)
+knitr::kable(stage_2)
+```
+
+### Stage 3: internal validation
+
+Stage 3 uses the following reproducibility setting when calculating
+permutation-based variable importance.
+
+```{r stage-3-tuning-parameters}
+# Define and display the Stage 3 tuning parameters passed to evaluation.
+stage3_seed <- 12345L
+
+knitr::kable(data.frame(
+  Tuning_parameter = "stage3_seed",
+  Value = stage3_seed,
+  Meaning = "Random-number seed used for reproducible evaluation",
+  check.names = FALSE
+))
+```
+
+```{r evaluate}
+stage_3 <- run_stage(
+  "03_get_results",
+  "03_get_results.R",
+  c(
+    "--data-dir", slash(dirs["analysis"]),
+    "--output-dir", slash(dirs["results"]),
+    "--analysis", analysis_name,
+    "--weight", "Sampling_Weight",
+    "--data-site", site,
+    "--model-site", site,
+    "--seed", stage3_seed
+  )
+)
+knitr::kable(stage_3)
+```
+
+### Stage 4: predict the full cohort
+
+The original stage-4 script registers `--seed` twice, so this analysis uses the
+documented modified copy, as in the reference notebook. When the stage-4 data
+or model site differs from `site`, the configured directories must contain the
+analysis-data and fitted-model files described in the configuration section.
+
+Stage 4 uses the following reproducibility setting when generating full-cohort
+predictions.
+
+```{r stage-4-tuning-parameters}
+# Define and display the Stage 4 tuning parameters passed to prediction.
+stage4_seed <- 12345L
+
+knitr::kable(data.frame(
+  Tuning_parameter = "stage4_seed",
+  Value = stage4_seed,
+  Meaning = "Random-number seed used for reproducible prediction",
+  check.names = FALSE
+))
+```
+
+```{r predict-all}
+stage_4 <- run_stage(
+  "04_get_predicted_probabilities",
+  "Modified_04_get_predicted_probabilities.R",
+  c(
+    "--data-dir", slash(stage4_data_dir_resolved),
+    "--output-dir", slash(stage4_output_dir_resolved),
+    "--analysis", analysis_name,
+    "--weight", "Sampling_Weight",
+    "--data-site", stage4_data_site,
+    "--model-site", stage4_model_site,
+    "--study-id", "Studyid",
+    "--valid-label", "Train_Eval_Set",
+    "--seed", stage4_seed
+  )
+)
+knitr::kable(stage_4)
+```
+
+## Results
+
+The following summaries are produced only after all four pipeline stages
+complete. The opening tables provide a high-level view of the data and analysis;
+the remaining subsections give supporting performance and diagnostic results.
+
+### Analysis overview
+
+This table summarizes the dataset dimensions, chart-review sampling, gold
+standard composition, and predictor types used in the analysis.
+
+```{r analysis-overview}
+n_total <- nrow(raw)
+n_reviewed <- sum(reviewed)
+n_unreviewed <- sum(!reviewed)
+n_cases <- sum(outcome[reviewed] == 1)
+n_controls <- sum(outcome[reviewed] == 0)
+nlp_predictors <- grepl("^C[0-9]+$", predictor_cols)
+model_feature_cols <- unique(c(predictor_cols, silver_label_cols))
+complete_unreviewed_model_features <-
+  !reviewed & complete.cases(raw[model_feature_cols])
+reviewed_complete_cols <- unique(c(model_feature_cols, gold_outcome_col))
+complete_reviewed_model_features_and_gold <-
+  reviewed & complete.cases(raw[reviewed_complete_cols])
+
+analysis_overview <- data.frame(
+  Item = c(
+    "Input dataset dimensions",
+    "Unreviewed observations complete for predictors and silver labels",
+    "Chart-reviewed observations complete for predictors, silver labels, and gold standard",
+    "Chart-reviewed observations",
+    "Unreviewed training observations",
+    "Gold-standard cases",
+    "Gold-standard controls",
+    "Silver-label variables",
+    "Structured predictors",
+    "CUI-based NLP predictors",
+    "Sampling-weight range"
+  ),
+  Result = c(
+    paste0(format(n_total, big.mark = ","), " observations × ",
+           ncol(raw), " variables"),
+    sprintf("%s (%.1f%% of unreviewed)",
+            format(sum(complete_unreviewed_model_features), big.mark = ","),
+            100 * sum(complete_unreviewed_model_features) / n_unreviewed),
+    sprintf("%s (%.1f%% of reviewed)",
+            format(sum(complete_reviewed_model_features_and_gold), big.mark = ","),
+            100 * sum(complete_reviewed_model_features_and_gold) / n_reviewed),
+    sprintf("%s (%.1f%%)", format(n_reviewed, big.mark = ","),
+            100 * n_reviewed / n_total),
+    sprintf("%s (%.1f%%)", format(n_unreviewed, big.mark = ","),
+            100 * n_unreviewed / n_total),
+    sprintf("%s (%.1f%% of reviewed)", format(n_cases, big.mark = ","),
+            100 * n_cases / n_reviewed),
+    sprintf("%s (%.1f%% of reviewed)", format(n_controls, big.mark = ","),
+            100 * n_controls / n_reviewed),
+    length(silver_label_cols),
+    sum(!nlp_predictors),
+    sum(nlp_predictors),
+    sprintf("%.3f to %.3f", min(sampling_weight), max(sampling_weight))
+  ),
+  check.names = FALSE
+)
+knitr::kable(
+  analysis_overview,
+  caption = paste(
+    "Complete-case rows assess the configured predictors and silver labels",
+    "for unreviewed observations, and those fields plus the gold-standard",
+    "outcome for chart-reviewed observations. Utilization and sampling-weight",
+    "fields are not included, but could be added for a broader assessment of",
+    "pipeline readiness."
+  )
+)
+```
+
+### Silver-label summary
+
+The first table describes the distribution and sparsity of each silver label
+in the full cohort. Count variables are summarized on their original input
+scale, before the pipeline's `log(x + 1)` transformation.
+
+```{r silver-label-summary}
+summarize_silver <- function(x) {
+  data.frame(
+    Nonzero_rows = sum(x > 0),
+    Nonzero_percent = sprintf("%.1f%%", 100 * mean(x > 0)),
+    `Mean (SD)` = sprintf("%.2f (%.2f)", mean(x), sd(x)),
+    check.names = FALSE
+  )
+}
+
+silver_summary <- do.call(rbind, lapply(silver_label_cols, function(label) {
+  data.frame(
+    Silver_label = label,
+    summarize_silver(raw[[label]]),
+    check.names = FALSE
+  )
+}))
+knitr::kable(silver_summary)
+```
+
+The next table compares silver-label distributions between cases and controls
+within the chart-reviewed gold-standard sample. Large differences between the
+groups indicate that a silver label contains useful phenotyping signal.
+
+```{r silver-label-by-gold-status}
+reviewed_groups <- list(
+  Cases = reviewed & outcome == 1,
+  Controls = reviewed & outcome == 0
+)
+silver_by_gold <- do.call(rbind, lapply(silver_label_cols, function(label) {
+  do.call(rbind, lapply(names(reviewed_groups), function(group) {
+    x <- raw[[label]][reviewed_groups[[group]]]
+    data.frame(
+      Silver_label = label,
+      Gold_standard_group = group,
+      N = length(x),
+      Nonzero_percent = sprintf("%.1f%%", 100 * mean(x > 0)),
+      `Mean (SD)` = sprintf("%.2f (%.2f)", mean(x), sd(x)),
+      check.names = FALSE
+    )
+  }))
+}))
+knitr::kable(silver_by_gold)
+```
+
+The boxplots visualize the complete silver-label distributions among reviewed
+cases and controls. Values are displayed as `log(silver label + 1)` so that
+right-skewed count distributions and zero values remain visible.
+
+```{r silver-label-boxplots}
+silver_plot_data <- do.call(rbind, lapply(silver_label_cols, function(label) {
+  data.frame(
+    Silver_label = label,
+    Gold_standard_group = factor(
+      ifelse(outcome[reviewed] == 1, "Cases", "Controls"),
+      levels = c("Controls", "Cases")
+    ),
+    Silver_value = raw[[label]][reviewed],
+    check.names = FALSE
+  )
+}))
+
+library(ggplot2)
+ggplot(
+  silver_plot_data,
+  aes(x = Gold_standard_group, y = log1p(Silver_value),
+      fill = Gold_standard_group)
+) +
+  geom_boxplot(width = 0.55, outlier.shape = NA, alpha = 0.75) +
+  geom_jitter(width = 0.12, alpha = 0.25, size = 0.8) +
+  facet_wrap(vars(Silver_label), scales = "free_y") +
+  scale_fill_manual(values = c("Controls" = "#4C78A8", "Cases" = "#E45756")) +
+  labs(
+    x = NULL,
+    y = "log(silver label + 1)",
+    title = "Silver-label distributions by gold-standard outcome",
+    subtitle = "Chart-reviewed evaluation sample"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "none")
+```
+
+Source names are mapped to uppercase internal names for compatibility with the
+downstream PheNorm scripts.
+
+```{r silver-label-name-mapping}
+knitr::kable(data.frame(
+  Source_silver_label = silver_label_cols,
+  Internal_silver_label = silver_model_names
+))
+```
+
+### Internal validation performance
+
+The table compares each raw silver label with its fitted PheNorm model on the
+held-out chart-reviewed sample. The aggregate model averages predictions from
+all silver-label-specific models and therefore has no single raw-label result.
+Larger AUC values indicate better ranking of cases above non-cases.
+
+```{r auc-results}
+result_prefix <- file.path(
+  dirs["results"], "plots_and_tables",
+  paste0(
+    "phenorm_", analysis_name, "_data_", site,
+    "_model_", site
+  )
+)
+auc_file <- paste0(result_prefix, "_aucs.csv")
+raw_auc_file <- paste0(result_prefix, "_raw_silver_aucs.csv")
+stopifnot(file.exists(auc_file), file.exists(raw_auc_file))
+
+auc_results <- read.csv(auc_file, check.names = FALSE)
+raw_auc_results <- read.csv(raw_auc_file, check.names = FALSE)
+label_map <- setNames(silver_label_cols, silver_model_names)
+display_model_name <- function(x) {
+  mapped <- unname(label_map[x])
+  ifelse(x == "Aggregate", "Aggregate",
+         ifelse(is.na(mapped), x, mapped))
+}
+auc_comparison <- data.frame(
+  Model = display_model_name(auc_results$id),
+  `PheNorm AUC [95% CI]` = auc_results$est_ci,
+  `Raw silver AUC [95% CI]` = raw_auc_results$est_ci[
+    match(auc_results$id, raw_auc_results$id)
+  ],
+  check.names = FALSE
+)
+auc_comparison[["Raw silver AUC [95% CI]"]][
+  is.na(auc_comparison[["Raw silver AUC [95% CI]"]])
+] <- "Not applicable"
+knitr::kable(auc_comparison)
+```
+
+#### Performance at the maximum-F1 cutoff
+
+This table reports the cutoff selected to maximize F1 within the evaluation
+sample, together with sensitivity, specificity, predictive values, and F
+scores at that cutoff.
+
+```{r maximum-f1-results}
+max_f1_file <- paste0(result_prefix, "_max_f1.csv")
+stopifnot(file.exists(max_f1_file))
+max_f1_results <- read.csv(max_f1_file, check.names = FALSE)
+max_f1_results$id <- display_model_name(max_f1_results$id)
+names(max_f1_results)[names(max_f1_results) == "id"] <- "Model"
+numeric_f1_cols <- vapply(max_f1_results, is.numeric, logical(1))
+max_f1_results[numeric_f1_cols] <- lapply(
+  max_f1_results[numeric_f1_cols], round, 3
+)
+knitr::kable(max_f1_results)
+```
+
+#### Held-out ROC curves
+
+The combined ROC plot shows sensitivity versus one minus specificity across
+all thresholds for each silver-label model and the aggregate model. Curves
+closer to the upper-left corner indicate stronger discrimination.
+
+```{r combined-roc}
+roc_file <- paste0(result_prefix, "_combined_roc.png")
+stopifnot(file.exists(roc_file))
+knitr::include_graphics(roc_file)
+```
+
+### Full-cohort prediction diagnostics
+
+The prediction file is checked for completeness, finite values, and valid
+probability bounds. For a same-site run, the plot then compares aggregate
+predicted probabilities between gold-standard cases and non-cases in the
+held-out evaluation sample. Better separation supports the discrimination
+summarized by the ROC results above.
+
+```{r load-predictions, include=FALSE}
+prediction_file <- file.path(
+  stage4_output_dir_resolved, "fits",
+  paste0(
+    analysis_name, "_", stage4_data_site,
+    "_phenorm_all_predicted_probabilities_using_", stage4_model_site,
+    "_model.csv"
+  )
+)
+stopifnot(file.exists(prediction_file))
+
+predictions <- read.csv(prediction_file, check.names = FALSE)
+probabilities <- predictions[setdiff(names(predictions), "Studyid")]
+stopifnot(
+  ncol(probabilities) >= 1L,
+  "Aggregate" %in% names(probabilities),
+  !anyNA(probabilities),
+  all(is.finite(as.matrix(probabilities))),
+  all(as.matrix(probabilities) >= 0 & as.matrix(probabilities) <= 1)
+)
+
+plot_data <- NULL
+if (identical(stage4_data_site, site)) {
+  stopifnot(
+    nrow(predictions) == nrow(cohort),
+    ncol(probabilities) == length(silver_label_cols) + 1L
+  )
+  plot_data <- cbind(
+    cohort[c("Studyid", "Train_Eval_Set", "PTYPE_POSITIVE")],
+    probabilities
+  )
+  plot_data <- plot_data[plot_data$Train_Eval_Set == 1L, ]
+  plot_data$Outcome <- factor(
+    plot_data$PTYPE_POSITIVE,
+    levels = c(0, 1),
+    labels = c("Negative", "Positive")
+  )
+}
+```
+
+The table summarizes aggregate predicted probabilities across the full cohort
+and, for a same-site analysis, separately for reviewed cases and controls.
+
+```{r prediction-summary}
+summarize_predictions <- function(x, population) {
+  data.frame(
+    Population = population,
+    N = length(x),
+    Mean = mean(x),
+    SD = sd(x),
+    Median = median(x),
+    Q1 = unname(quantile(x, 0.25)),
+    Q3 = unname(quantile(x, 0.75)),
+    Min = min(x),
+    Max = max(x),
+    check.names = FALSE
+  )
+}
+prediction_summary <- summarize_predictions(
+  probabilities$Aggregate, "Full cohort"
+)
+if (!is.null(plot_data)) {
+  prediction_summary <- rbind(
+    prediction_summary,
+    summarize_predictions(
+      plot_data$Aggregate[plot_data$Outcome == "Positive"],
+      "Reviewed cases"
+    ),
+    summarize_predictions(
+      plot_data$Aggregate[plot_data$Outcome == "Negative"],
+      "Reviewed controls"
+    )
+  )
+}
+numeric_prediction_cols <- vapply(prediction_summary, is.numeric, logical(1))
+numeric_prediction_cols["N"] <- FALSE
+prediction_summary[numeric_prediction_cols] <- lapply(
+  prediction_summary[numeric_prediction_cols], round, 3
+)
+knitr::kable(prediction_summary)
+```
+
+```{r probability-by-class}
+if (is.null(plot_data)) {
+  cat(
+    "Prediction diagnostic plot skipped because stage4_data_site differs ",
+    "from the cohort prepared in this notebook.\n",
+    sep = ""
+  )
+} else {
+  library(ggplot2)
+  print(
+    ggplot(
+      plot_data,
+      aes(x = Outcome, y = Aggregate, fill = Outcome)
+    ) +
+      geom_violin(trim = FALSE, alpha = 0.45, color = NA) +
+      geom_boxplot(width = 0.18, outlier.shape = NA, alpha = 0.8) +
+      geom_jitter(width = 0.08, alpha = 0.35, size = 1.2) +
+      scale_y_continuous(breaks = seq(0, 1, 0.2)) +
+      coord_cartesian(ylim = c(0, 1)) +
+      scale_fill_manual(values = c("#4C78A8", "#E45756")) +
+      labs(
+        x = NULL,
+        y = "Aggregate predicted probability",
+        title = "PheNorm predictions by gold-standard outcome",
+        subtitle = "Held-out evaluation set"
+      ) +
+      theme_minimal(base_size = 12) +
+      theme(legend.position = "none")
+  )
+}
+```
+
+The faceted histogram below shows the full-cohort probability distribution for
+each silver-label-specific model and the aggregate prediction.
+
+```{r full-cohort-prediction-histogram}
+prediction_histogram_file <- file.path(
+  stage4_output_dir_resolved, "fits",
+  paste0(
+    analysis_name, "_", stage4_data_site,
+    "_phenorm_predicted_probabilities_hist_using_", stage4_model_site,
+    "_model.png"
+  )
+)
+stopifnot(file.exists(prediction_histogram_file))
+knitr::include_graphics(prediction_histogram_file)
+```
+
+### Model interpretation
+
+Permutation importance measures the decrease in evaluation AUC after one
+variable is randomly permuted. The table shows up to ten variables with the
+largest absolute importance for the aggregate prediction, excluding pipeline
+identifier and outcome fields.
+
+```{r variable-importance-results}
+vim_file <- paste0(result_prefix, "_vim.csv")
+stopifnot(file.exists(vim_file))
+vim_results <- read.csv(vim_file, check.names = FALSE)
+excluded_vim_variables <- toupper(c(
+  "Studyid", "Train_Eval_Set", "PTYPE_POSITIVE", "Sampling_Weight"
+))
+vim_results <- vim_results[
+  !(toupper(vim_results$var) %in% excluded_vim_variables),
+  , drop = FALSE
+]
+vim_results <- vim_results[
+  order(abs(vim_results$est_Aggregate), decreasing = TRUE),
+  , drop = FALSE
+]
+vim_display <- head(vim_results[c("var", "est_Aggregate")], 10L)
+names(vim_display) <- c("Variable", "Aggregate AUC decrease")
+vim_display[["Aggregate AUC decrease"]] <- round(
+  vim_display[["Aggregate AUC decrease"]], 4
+)
+knitr::kable(vim_display)
+```
+
+The coefficient table shows up to ten variables with the largest absolute
+coefficient in any silver-label-specific PheNorm model. Signs indicate the
+direction of association with the corresponding normalized phenotype score.
+
+```{r coefficient-results}
+coefficient_file <- paste0(result_prefix, "_coefficients.csv")
+stopifnot(file.exists(coefficient_file))
+coefficient_results <- read.csv(coefficient_file, check.names = FALSE)
+coefficient_numeric <- vapply(coefficient_results, is.numeric, logical(1))
+coefficient_rank <- apply(
+  abs(as.matrix(coefficient_results[coefficient_numeric])), 1, max
+)
+coefficient_results <- coefficient_results[
+  order(coefficient_rank, decreasing = TRUE),
+  , drop = FALSE
+]
+coefficient_display <- head(coefficient_results, 10L)
+coefficient_display[coefficient_numeric] <- lapply(
+  coefficient_display[coefficient_numeric], round, 3
+)
+knitr::kable(coefficient_display)
+```
+
+### Analysis settings and data-quality checks
+
+These settings identify the main preprocessing and modeling choices used in
+this run. Detailed stage-specific parameter tables are shown with the pipeline
+execution above.
+
+```{r analysis-settings-summary}
+knitr::kable(data.frame(
+  Setting = c(
+    "Analysis site", "Stage-4 data site", "Stage-4 model site",
+    "Use AFEP screening", "Use non-negated mentions",
+    "Use non-normalized features", "Use normalized features",
+    "Train on reviewed observations", "Corruption rate",
+    "Training-size multiplier", "Fitting seed", "Evaluation seed",
+    "Prediction seed"
+  ),
+  Value = c(
+    site, stage4_data_site, stage4_model_site,
+    stage1_use_afep, stage1_use_nonnegative_mentions,
+    stage1_use_nonnormalized_features, stage1_use_normalized_features,
+    stage1_train_on_gold, stage2_corrupt_rate,
+    stage2_train_size_multiplier, stage2_seed, stage3_seed, stage4_seed
+  ),
+  check.names = FALSE
+))
+```
+
+The data-quality checks summarize issues that could affect interpretation. A
+successful run has no duplicate IDs, missing required model values, nonfinite
+values, or negative model values.
+
+```{r data-quality-summary}
+quality_cols <- unique(c(
+  reviewed_col, utilization_col, sampling_weight_col,
+  silver_label_cols, predictor_cols
+))
+quality_data <- raw[quality_cols]
+numeric_quality_data <- quality_data[
+  vapply(quality_data, is.numeric, logical(1))
+]
+data_quality <- data.frame(
+  Check = c(
+    "Duplicate study IDs",
+    "Missing values in required model fields",
+    "Missing gold outcomes among reviewed observations",
+    "Nonfinite numeric model values",
+    "Negative numeric model values",
+    "Nonpositive sampling weights",
+    "Zero-variance selected predictors",
+    "Pipeline stages completed successfully"
+  ),
+  Result = c(
+    anyDuplicated(study_id),
+    sum(is.na(quality_data)),
+    sum(is.na(outcome[reviewed])),
+    sum(!is.finite(as.matrix(numeric_quality_data))),
+    sum(as.matrix(numeric_quality_data) < 0),
+    sum(sampling_weight <= 0),
+    sum(vapply(raw[predictor_cols], function(x) length(unique(x)) <= 1L,
+               logical(1))),
+    all(c(stage_1$Exit_status, stage_2$Exit_status, stage_3$Exit_status,
+          stage_4$Exit_status) == 0L)
+  ),
+  check.names = FALSE
+)
+knitr::kable(data_quality)
+```
+
+### Output locations
+
+The report, stage logs, fitted models, tables, plots, predictions, and prepared
+analysis data are stored in the run-specific directories printed below.
+
+```{r output-locations}
+cat("Report, logs, and results for this run are in:", run_dir, "\n")
+cat("Prepared input and analysis data for this run are in:",
+    processed_data_run_dir, "\n")
+```

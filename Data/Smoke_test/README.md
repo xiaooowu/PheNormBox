@@ -10,7 +10,7 @@ simulation retains the simplest `nonrare_info` mechanism adapted from
 
 - `01_generate_smoke_data.R` regenerates and validates the synthetic cohort.
 - `phenorm_smoke_test_nonrare_info.csv` is the CSV input used by
-  `Generalizable_PheNorm_Analysis_smoke_data.Rmd`.
+  `PheNorm_Analysis.Rmd`.
 - `phenorm_smoke_test_nonrare_info.rds` stores the same data as an R object.
 
 ## Generation mechanism
@@ -34,7 +34,7 @@ independent observations:
 7. Three silver standards are constructed from the simulated counts: the ICD
    count, the NLP count, and their sum.
 8. The seven predictor columns mirror the compact example in
-   `Generalizable_PheNorm_Analysis_README.md`: age is sampled uniformly from
+   the root `README.md`: age is sampled uniformly from
    the integers `18` through `90`; sex is represented by a Bernoulli female
    indicator with probability `0.52`; and race is sampled as one mutually
    exclusive category (`asian`, `black`, or `white`) with probabilities `0.15`,

@@ -2,7 +2,7 @@
 
 ## Purpose
 
-`Generalizable_PheNorm_Analysis.Rmd` provides a PheNorm workflow for a patient-level cohort stored in a CSV file. A user specifies the input columns and analysis settings in one configuration section at the top of the R Markdown file. The document then:
+This repository provides a complete PheNorm workflow. A user specifies the input columns and analysis settings in one configuration section at the top of the R Markdown file. The document then:
 
 1. Validates and prepares the cohort.
 2. Fits PheNorm models.
@@ -41,21 +41,21 @@ Keep the following files and directories together:
 
 ```text
 PheNorm_renv/
-├── Generalizable_PheNorm_Analysis.Rmd
+├── PheNorm_Analysis.Rmd
 ├── PheNorm_renv.Rproj
 ├── renv.lock
 ├── .Rprofile
 ├── renv/
 ├── PheNorm/
 ├── Data/
-└── Result/                         # Created or reused during analysis
+└── Result/                         
 ```
 
 Run the analysis from the `PheNorm_renv` project root. The scripts use `PheNorm_renv.Rproj` to identify that root.
 
 ## Configuration guide
 
-Edit the first code chunk in `Generalizable_PheNorm_Analysis.Rmd`. The table below combines the input-data specifications with their corresponding R configuration settings.
+Edit the first code chunk in `PheNorm_Analysis.Rmd`. The table below combines the input-data specifications with their corresponding R configuration settings.
 
 | Setting or data element | Configuration value or naming pattern | Value/requirement |
 |---|---|---|
@@ -66,7 +66,7 @@ Edit the first code chunk in `Generalizable_PheNorm_Analysis.Rmd`. The table bel
 | `reviewed_col` | `"reviewed_col"` | Binary and complete: `0` = not reviewed and `1` = reviewed. The dataset must contain both reviewed and unreviewed observations. |
 | `reviewed_value` | `1` | Identifies the reviewed/evaluation observations. |
 | `gold_outcome_col` | `"gold_outcome"` | Binary: `0` = not a case and `1` = case. Values must be nonmissing for reviewed observations, and reviewed observations must include both classes. Values may be missing for unreviewed observations. |
-| `utilization_col` | Name of a utilization variable, such as number of notes or encounters | Values must be numeric, finite, complete, and nonnegative. Do not log-transform counts; stage 1 applies `log(x + 1)`. |
+| `utilization_col` | Name of a utilization variable, such as number of notes or encounters | Values must be numeric, finite, complete, and nonnegative. Do not log-transform counts; stage 1 applies `log(x + 1)`. When set to `NULL`, every observation receives utilization = 1.  |
 | `sampling_weight_col` | Name of the sampling-weight column, or `NULL` | Values must be numeric, finite, complete, and greater than zero. When set to `NULL`, every observation receives weight `1`. |
 | `silver_label_cols` | Character vector of exact column names beginning with `silver_` | See [Silver labels](#silver-labels) below.|
 | `predictor_cols`: structured/NLP data | Character vector of exact outcome-specific column names | CUI-based NLP variables must begin with uppercase `C`; see [Predictors](#predictors) below.|
@@ -99,7 +99,7 @@ A column that is present in the CSV but absent from `predictor_cols` and `silver
 
 List the exact source column names in `silver_label_cols`. At least one silver label is required, and every silver-standard variable must begin with the lowercase prefix `silver_`. The outcome-specific silver labels to use will be provided separately.
 
-### Compact example
+### Compact example for data configuration in PheNorm_Analysis.Rmd
 
 ```r
 data_file <- here::here(
@@ -155,6 +155,9 @@ The configured directories must contain these exact paths:
 
 The external analysis data must contain variables compatible with the fitted model. Predictions are written under `<stage4_output_dir>/fits/`. When `stage4_data_site` differs from `site`, the report skips the gold-standard diagnostic plot because the external predictions do not correspond to the cohort prepared in the current notebook.
 
+# Running example
+
+The following section provides instruction on how to run PheNorm_Analysis.Rmd with different tools. This script uses a synthetic data (`Data/Smoke_data`) with a simple data generation mechanism, so the result may not reflect the actual performance of the method.
 ## Running with RStudio
 
 1. Open `PheNorm_renv.Rproj` in RStudio.
@@ -167,21 +170,21 @@ The external analysis data must contain variables compatible with the fitted mod
    renv::status()
    ```
 
-4. Open `Generalizable_PheNorm_Analysis.Rmd`.
+4. Open `PheNorm_Analysis.Rmd`.
 5. Edit and save the user-configuration chunk.
 6. Click **Knit**.
 
 The Knit button uses the document's custom knit function. It creates:
 
 ```text
-Result/Generalizable_PheNorm_Analysis_result_YYYYMMDD_HHMMSS/
+Result/PheNorm_Analysis_result_YYYYMMDD_HHMMSS/
 ```
 
 The rendered report is saved in that directory as `Analysis.html`. If `analysis_id` is set, it controls analysis artifact names, but the timestamped run-directory name is based on the Rmd filename used by the Knit function.
 
 ## Running with RGui
 
-Start RGui, then run the following commands in its console. This example runs `Generalizable_PheNorm_Analysis_smoke_data.Rmd` with the included smoke-test data:
+Start RGui, then run the following commands in its console. This example runs `PheNorm_Analysis.Rmd` with the included smoke-test data:
 
 ```r
 setwd("/path/to/PheNorm_renv")
@@ -192,7 +195,7 @@ source("renv/activate.R")
 # Only needed the first time, or when the lockfile changes:
 # renv::restore()
 
-input <- "Generalizable_PheNorm_Analysis_smoke_data.Rmd"
+input <- "PheNorm_Analysis.Rmd"
 run_name <- paste0(
   tools::file_path_sans_ext(basename(input)),
   "_result_",
@@ -219,10 +222,10 @@ Replace `/path/to/PheNorm_renv` with the actual project path. RGui does not incl
 rmarkdown::pandoc_available()
 ```
 
-The smoke-test report is written to:
+The report is written to:
 
 ```text
-Result/Generalizable_PheNorm_Analysis_smoke_data_result_YYYYMMDD_HHMMSS/Analysis.html
+Result/PheNorm_Analysis_result_YYYYMMDD_HHMMSS/Analysis.html
 ```
 
 Keep RGui open until rendering and all four pipeline stages finish.
@@ -237,7 +240,7 @@ macOS/Linux/Windows (terminal accessed through VS Code) example:
 cd "/path/to/PheNorm_renv"
 Rscript -e 'renv::restore()'
 Rscript -e 'stopifnot(rmarkdown::pandoc_available())'
-Rscript -e 'input <- "Generalizable_PheNorm_Analysis_smoke_data.Rmd"; out <- file.path("Result", paste0(tools::file_path_sans_ext(basename(input)), "_result_", format(Sys.time(), "%Y%m%d_%H%M%S"))); dir.create(out, recursive = TRUE, showWarnings = FALSE); Sys.setenv(RUN_DIR = out); rmarkdown::render(input, output_file = "Analysis.html", output_dir = out)'
+Rscript -e 'input <- "PheNorm_Analysis.Rmd"; out <- file.path("Result", paste0(tools::file_path_sans_ext(basename(input)), "_result_", format(Sys.time(), "%Y%m%d_%H%M%S"))); dir.create(out, recursive = TRUE, showWarnings = FALSE); Sys.setenv(RUN_DIR = out); rmarkdown::render(input, output_file = "Analysis.html", output_dir = out)'
 ```
 
 The package restore only needs to be repeated when the environment is missing or the lockfile changes.
@@ -247,7 +250,7 @@ The package restore only needs to be repeated when the environment is missing or
 The terminal command sets `RUN_DIR` and `output_dir` to the same timestamped directory, matching the RStudio Knit behavior. The rendered report is stored at:
 
 ```text
-Result/Generalizable_PheNorm_Analysis_result_YYYYMMDD_HHMMSS/Analysis.html
+Result/PheNorm_Analysis_result_YYYYMMDD_HHMMSS/Analysis.html
 ```
 
 Results and logs are stored in that run directory. Prepared and analysis-ready data are stored under the matching directory in `Result/Processed_data/`.

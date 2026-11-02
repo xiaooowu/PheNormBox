@@ -127,7 +127,7 @@ analysis_name <- if (!is.null(analysis_id)) {
   tools::file_path_sans_ext(basename(current_input))
 } else {
   # Fallback for running individual chunks outside a Knit/render operation.
-  "Generalizable_PheNorm_Analysis"
+  "PheNorm_Analysis"
 }
 
 if (!is.character(analysis_name) || length(analysis_name) != 1L ||

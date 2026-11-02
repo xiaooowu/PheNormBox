@@ -21,7 +21,7 @@ nlp_count <- rpois(n, ifelse(outcome == 1, 12, 3))
 test_set <- integer(n)
 test_set[sample.int(n, 200L)] <- 1L
 
-# Predictors mirror the compact example in Generalizable_PheNorm_Analysis_README.md.
+# Predictors mirror the compact example in the root README.md.
 # Demographic variables are generated independently of the outcome, whereas the
 # two CUI counts are informative but noisy NLP features.
 age <- sample(18:90, n, replace = TRUE)

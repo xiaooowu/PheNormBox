@@ -1,4 +1,4 @@
-# Generalizable PheNorm Analysis
+# PheNorm Analysis containerizied through `renv`
 
 ## Purpose
 

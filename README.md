@@ -199,10 +199,6 @@ The rendered report is saved in that directory as `Analysis.html`. If `analysis_
 RStudio includes Pandoc. When using RGui, VS Code, or a terminal, Pandoc can instead be installed and activated with the `pandoc` R package. Run the following after activating the project library and restoring its packages:
 
 ```r
-if (!requireNamespace("pandoc", quietly = TRUE)) {
-  install.packages("pandoc")
-}
-
 # Install Pandoc
 if (max(c(pandoc_installed_versions(),'0')) < '2.8' ) {
     pandoc_install("latest")

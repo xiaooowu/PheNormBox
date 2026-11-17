@@ -2,7 +2,7 @@
 
 ## Purpose
 
-This repository provides a complete PheNorm workflow. A user specifies the input columns and analysis settings in one configuration section at the top of the R Markdown file. The document then:
+This repository provides a complete PheNorm workflow. A user specifies the input columns and analysis settings in one configuration section at the top of the R Markdown file. A user then:
 
 1. Validates and prepares the cohort.
 2. Fits PheNorm models.
@@ -17,7 +17,7 @@ Unreviewed records are used for model training. Chart-reviewed records are used 
 ### Software
 
 - R. The project lockfile records **R 4.6.0**; using that version is recommended for the most reproducible setup.
-- Pandoc, which is required to render the R Markdown report. RStudio includes Pandoc. Users without RStudio must install Pandoc separately and make it available on the system `PATH`.
+- Pandoc, which is required to render the R Markdown report. RStudio includes Pandoc. Users running through RGui, VS Code, or a terminal can install and activate Pandoc from R using the instructions below, without manually changing `PATH`.
 - Internet access when restoring packages on a computer where they are not already installed.
 - On Windows, Rtools may be needed if any package must be compiled from source.
 
@@ -35,6 +35,16 @@ The main packages used by the workflow include:
 
 `renv::restore()` installs these packages and their recorded dependencies.
 
+By default, `renv::restore()` uses the repositories recorded in `renv.lock`. To use an organizational repository, such as an internal KP repository, supply the `repos` argument:
+
+```r
+renv::restore(
+  repos = c(CRAN = "https://your-internal-repository/")
+)
+```
+
+The selected repositories must provide the package versions recorded in the lockfile.
+
 ### Project structure
 
 Keep the following files and directories together:
@@ -42,6 +52,7 @@ Keep the following files and directories together:
 ```text
 PheNorm_renv/
 ├── PheNorm_Analysis.Rmd
+├── render_analysis.R
 ├── PheNorm_renv.Rproj
 ├── renv.lock
 ├── .Rprofile
@@ -59,9 +70,7 @@ Edit the first code chunk in `PheNorm_Analysis.Rmd`. The table below combines th
 
 | Setting or data element | Configuration value or naming pattern | Value/requirement |
 |---|---|---|
-| Input-data layout | CSV file with a header row | One observation per row and one variable per column. |
-| Variable names | Lowercase names with underscores in place of spaces, except CUI variables, which begin with uppercase `C` | Names must be unique. |
-| `data_file` | Absolute path or a path constructed with `here::here()` | Must identify the input CSV file. |
+| `data_file` | Absolute path or a path constructed with `here::here()` | Must identify the input file with a header row, one observation per row and one variable per column. |
 | `study_id_col` | Name of the patient or record ID column | Values must be unique and nonmissing. |
 | `reviewed_col` | `"reviewed_col"` | Binary and complete: `0` = not reviewed and `1` = reviewed. The dataset must contain both reviewed and unreviewed observations. |
 | `reviewed_value` | `1` | Identifies the reviewed/evaluation observations. |
@@ -158,6 +167,7 @@ The external analysis data must contain variables compatible with the fitted mod
 # Running example
 
 The following section provides instruction on how to run PheNorm_Analysis.Rmd with different tools. This script uses a synthetic data (`Data/Smoke_data`) with a simple data generation mechanism, so the result may not reflect the actual performance of the method.
+
 ## Running with RStudio
 
 1. Open `PheNorm_renv.Rproj` in RStudio.
@@ -166,7 +176,7 @@ The following section provides instruction on how to run PheNorm_Analysis.Rmd wi
 
    ```r
    install.packages("renv")  # Only if renv is unavailable
-   renv::restore()
+   renv::restore()  # Add repos = ... to use another repository
    renv::status()
    ```
 
@@ -182,9 +192,48 @@ Result/PheNorm_Analysis_result_YYYYMMDD_HHMMSS/
 
 The rendered report is saved in that directory as `Analysis.html`. If `analysis_id` is set, it controls analysis artifact names, but the timestamped run-directory name is based on the Rmd filename used by the Knit function.
 
-## Running with RGui
+## Running outside RStudio
 
-Start RGui, then run the following commands in its console. This example runs `PheNorm_Analysis.Rmd` with the included smoke-test data:
+### Pandoc setup outside RStudio
+
+RStudio includes Pandoc. When using RGui, VS Code, or a terminal, Pandoc can instead be installed and activated with the `pandoc` R package. Run the following after activating the project library and restoring its packages:
+
+```r
+if (!requireNamespace("pandoc", quietly = TRUE)) {
+  install.packages("pandoc")
+}
+
+# Install Pandoc
+if (max(c(pandoc_installed_versions(),'0')) < '2.8' ) {
+    pandoc_install("latest")
+}
+
+# Activate Pandoc in the current session
+if (max(c(pandoc_version(),'0')) < '2.8') {
+    pandoc_activate("latest")
+}
+```
+
+Installing Pandoc persists between R sessions, but `pandoc::pandoc_activate()` must be called in each new session used to render the report.
+
+After installing the `pandoc` package, you may see the following message. This is normal, since the `pandoc` is used in the code but not included in the lockfile.
+
+```
+Rscript -e 'renv::restore()'
+- The project is out-of-sync -- use `renv::status()` for details.
+- The library is already synchronized with the lockfile.
+
+Rscript -e 'renv::status()' 
+- The project is out-of-sync -- use `renv::status()` for details.
+The following package(s) are used in this project, but are not installed:
+- pandoc
+
+See `?renv::status` for advice on resolving these issues.
+```
+
+## Running with RGui or VS Code
+
+Start RGui, or start an R terminal in VS Code, then run the following commands in that R session. The same commands work in both environments. This example runs `PheNorm_Analysis.Rmd` with the included smoke-test data:
 
 ```r
 setwd("/path/to/PheNorm_renv")
@@ -193,7 +242,14 @@ setwd("/path/to/PheNorm_renv")
 source("renv/activate.R")
 
 # Only needed the first time, or when the lockfile changes:
-# renv::restore()
+# renv::restore()  # Add repos = ... to use another repository
+
+# Activate an installation managed by the pandoc R package, if available.
+if (requireNamespace("pandoc", quietly = TRUE) &&
+    length(pandoc::pandoc_installed_versions()) > 0L) {
+  pandoc::pandoc_activate("latest", rmarkdown = TRUE)
+}
+stopifnot(rmarkdown::pandoc_available())
 
 input <- "PheNorm_Analysis.Rmd"
 run_name <- paste0(
@@ -216,7 +272,7 @@ tryCatch(
 )
 ```
 
-Replace `/path/to/PheNorm_renv` with the actual project path. RGui does not include Pandoc, so Pandoc must be installed separately and available on the system `PATH`. Its availability can be checked with:
+Replace `/path/to/PheNorm_renv` with the actual project path. If Pandoc is not already installed through RStudio or on the system `PATH`, follow [Pandoc setup outside RStudio](#pandoc-setup-outside-rstudio). Its availability can be checked with:
 
 ```r
 rmarkdown::pandoc_available()
@@ -228,17 +284,17 @@ The report is written to:
 Result/PheNorm_Analysis_result_YYYYMMDD_HHMMSS/Analysis.html
 ```
 
-Keep RGui open until rendering and all four pipeline stages finish.
+Keep the R session open until rendering and all four pipeline stages finish.
 
 ## Running with terminal
-Install R and Pandoc, and make both `Rscript` and `pandoc` available on the system `PATH`. Then open a terminal and change to the project root.
 
-macOS/Linux example:
+Install R and make `Rscript` available on the system `PATH`. Pandoc can either be available on the system `PATH`, included with RStudio, or installed through the `pandoc` R package as described in [Pandoc setup outside RStudio](#pandoc-setup-outside-rstudio). Then open a terminal and change to the project root.
+
+### macOS/Linux example:
 
 ```bash
 cd "/path/to/PheNorm_renv"
-Rscript -e 'renv::restore()'
-Rscript -e 'stopifnot(rmarkdown::pandoc_available())'
+Rscript -e 'renv::restore()' # Add repos = ... to use another repository
 Rscript -e '
 input <- "PheNorm_Analysis.Rmd"
 run_name <- paste0(
@@ -250,6 +306,13 @@ output_dir <- file.path("Result", run_name)
 
 dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
 Sys.setenv(RUN_DIR = output_dir)
+
+if (requireNamespace("pandoc", quietly = TRUE) &&
+    length(pandoc::pandoc_installed_versions()) > 0L) {
+  pandoc::pandoc_activate("latest", rmarkdown = TRUE)
+}
+stopifnot(rmarkdown::pandoc_available())
+
 rmarkdown::render(
   input,
   output_file = "Analysis.html",
@@ -258,22 +321,54 @@ rmarkdown::render(
 '
 ```
 
-Windows example:
+Alternatively, run the R script directly:
 
-First, run the following commands per PowerShell window. Adjust the path as needed.
+```bash
+cd "/path/to/PheNorm_renv"
+
+# Only needed the first time, or when renv.lock changes:
+Rscript -e 'renv::restore()'
+
+# Run the analysis:
+Rscript render_analysis.R
+```
+
+### Windows example:
+
+First, make `Rscript` available in the current PowerShell window. Adjust the path as needed.
 
 ```powershell
-$env:Path += ";C:\Program Files\R\R-4.6.1\bin"
+$env:Path += ";C:\Program Files\R\R-4.6.0\bin"
+```
+
+If using the Pandoc installation included with RStudio, also set its location for the current PowerShell window:
+
+```powershell
 $env:RSTUDIO_PANDOC = 'C:\Program Files\RStudio\resources\app\bin\quarto\bin\tools'
 ```
 
+Then run the analysis. If the `pandoc` R package is installed separately, directly run the following commands:
+
 ```powershell
 Set-Location "C:\path\to\PheNorm_renv"
-Rscript -e 'renv::restore()'
-Rscript -e 'stopifnot(rmarkdown::pandoc_available())'
-Rscript -e 'input <- \"PheNorm_Analysis.Rmd\"; out <- file.path(\"Result\", paste0(tools::file_path_sans_ext(basename(input)), \"_result_\", format(Sys.time(), \"%Y%m%d_%H%M%S\"))); dir.create(out, recursive = TRUE, showWarnings = FALSE); Sys.setenv(RUN_DIR = out); rmarkdown::render(input, output_file = \"Analysis.html\", output_dir = out)'
+
+# Run only the first time, or when renv.lock changes.
+Rscript -e 'renv::restore()' # Add repos = ... to use another repository
+
+Rscript -e 'input <- "PheNorm_Analysis.Rmd"; out <- file.path("Result", paste0(tools::file_path_sans_ext(basename(input)), "_result_", format(Sys.time(), "%Y%m%d_%H%M%S"))); dir.create(out, recursive = TRUE, showWarnings = FALSE); Sys.setenv(RUN_DIR = out); if (requireNamespace("pandoc", quietly = TRUE) && length(pandoc::pandoc_installed_versions()) > 0L) pandoc::pandoc_activate("latest", rmarkdown = TRUE); stopifnot(rmarkdown::pandoc_available()); rmarkdown::render(input, output_file = "Analysis.html", output_dir = out)'
 ```
 
+Alternatively, run the R script directly:
+
+```powershell
+Set-Location "C:\path\to\PheNorm_renv"
+
+# Only needed the first time, or when renv.lock changes:
+Rscript -e 'renv::restore()'
+
+# Run the analysis:
+Rscript render_analysis.R
+```
 
 The package restore only needs to be repeated when the environment is missing or the lockfile changes.
 

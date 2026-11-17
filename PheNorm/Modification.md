@@ -72,6 +72,25 @@ The modified copy completed successfully with exit status zero. The full R Markd
 
 The rendered report is `../Test/PheNorm_Smoke_Test.html`. Prepared input is stored in `../Data/Smoke_test/`; each run's analysis objects, results, and console logs are stored in a timestamped `../Test/Smoke_test_result_YYYYMMDD_HHMMSS/` folder.
 
+## Modification 2: square ROC plot dimensions
+
+### Modified file
+
+`03_get_results.R`
+
+### Change
+
+On 2026-11-16, the output dimensions for both the combined ROC plot and each
+individual ROC plot were changed from 12 by 5 inches to 7 by 7 inches. This
+gives ROC plots equal width and height, making their visual interpretation
+easier. The dimensions of the non-ROC combined-performance plots remain
+unchanged at 12 by 5 inches.
+
+### Scope
+
+This change affects only the dimensions of newly generated ROC PNG files. It
+does not change the ROC calculations, plotted data, or other output plots.
+
 ## Nonfatal observations not modified
 
 1. `03_get_results.R` emitted four plotting warnings stating that one missing or out-of-range row was removed by `geom_line()`. The stage still completed and wrote all expected result files. These warnings occur at metric-curve boundary values and were not treated as a runtime failure.

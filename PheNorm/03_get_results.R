@@ -128,7 +128,7 @@ combined_roc_curve <- phenorm_roc(performance_object = perf,
                                   n_legend_rows = 3)
 ggsave(
   filename = paste0(result_prefix, "_combined_roc.png"), 
-  plot = combined_roc_curve, width = 12, height = 5, units = "in"
+  plot = combined_roc_curve, width = 7, height = 7, units = "in"
 )
 silver_labels_plus_voting <- c(silver_labels, "Aggregate")
 # ROC curves, performance plots, performance table
@@ -142,7 +142,7 @@ for (i in seq_len(length(silver_labels_plus_voting))) {
   file_prefix <- paste0(result_prefix, "_", tolower(this_silver_label))
   ggsave(
     filename = paste0(file_prefix, "_roc.png"),
-    plot = this_roc_curve, width = 12, height = 5, units = "in"
+    plot = this_roc_curve, width = 7, height = 7, units = "in"
   )
   this_combined_perf <- phenorm_combined(
     performance_object = this_perf,
